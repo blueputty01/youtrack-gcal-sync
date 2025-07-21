@@ -57,7 +57,7 @@ func (c *Client) FetchEvents(calendarID, syncToken string) ([]*Event, string, er
 			eventsCall.SyncToken(syncToken)
 		} else {
 			// Initial sync, fetch all events
-			eventsCall.TimeMin(time.Now().Add(-30 * 24 * time.Hour).Format(time.RFC3339)) // Fetch last 30 days for initial sync
+			eventsCall.TimeMin(time.Now().Format(time.RFC3339)) 
 		}
 
 		events, err := eventsCall.Do()
