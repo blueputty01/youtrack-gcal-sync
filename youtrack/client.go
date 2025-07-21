@@ -190,3 +190,44 @@ func (c *Client) GetUpdatedIssues(projectID string, since time.Time) ([]Issue, e
 	}
 	return issues, nil
 }
+
+// GetDeletedIssueIDs fetches the IDs of issues that have been deleted since a given time.
+func (c *Client) GetDeletedIssueIDs(projectID string, since time.Time) ([]string, error) {
+	// YouTrack API doesn't directly support querying for deleted issues.
+	// A common workaround is to use the activities API.
+	// This is a simplified example; a robust implementation might need to handle pagination.
+	query := url.QueryEscape(fmt.Sprintf("project:%s", projectID))
+	url := fmt.Sprintf("%s%s/activities?categories=IssueDeletedCategory&author=me&since=%d&query=%s", c.BaseURL, apiPath, since.UnixMilli(), query)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get deleted issues, status: %s, body: %s", resp.Status, respBody)
+	}
+
+	var activities []struct {
+		Target struct {
+			ID string `json:"idReadable"`
+		} `json:"target"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&activities); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	var deletedIDs []string
+	for _, activity := range activities {
+		deletedIDs = append(deletedIDs, activity.Target.ID)
+	}
+	return deletedIDs, nil
+}

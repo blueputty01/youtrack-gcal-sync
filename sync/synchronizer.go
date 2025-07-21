@@ -17,6 +17,7 @@ type GCalClient interface {
 	FetchEvents(calendarID, syncToken string) ([]*googlecalendar.Event, string, error)
 	CreateEvent(calendarID, summary, description string, start, end time.Time) (*calendar.Event, error)
 	UpdateEvent(calendarID, eventID, summary, description string, start, end time.Time) (*calendar.Event, error)
+	DeleteEvent(calendarID, eventID string) error
 }
 
 // YTClient defines the interface for YouTrack client operations.
@@ -24,6 +25,7 @@ type YTClient interface {
 	GetUpdatedIssues(projectID string, since time.Time) ([]youtrack.Issue, error)
 	CreateIssue(projectID, summary, description string, dueDate *time.Time) (*youtrack.Issue, error)
 	UpdateIssue(issueID, summary, description string, dueDate *time.Time) error
+	GetDeletedIssueIDs(projectID string, since time.Time) ([]string, error)
 	GetBaseURL() string
 }
 
@@ -78,6 +80,10 @@ func (s *Synchronizer) Sync() error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch YouTrack issues: %w", err)
 	}
+	ytDeletedIssueIDs, err := s.YouTrackClient.GetDeletedIssueIDs(s.YouTrackQueryProjectID, ytLastSync)
+	if err != nil {
+		return fmt.Errorf("failed to fetch deleted YouTrack issue IDs: %w", err)
+	}
 
 	if err := s.processGCalEvents(gcalEvents); err != nil {
 		return err
@@ -86,6 +92,9 @@ func (s *Synchronizer) Sync() error {
 		return err
 	}
 	if err := s.handleDeletions(gcalEvents); err != nil {
+		return err
+	}
+	if err := s.processYTDeletions(ytDeletedIssueIDs); err != nil {
 		return err
 	}
 
@@ -227,6 +236,28 @@ func (s *Synchronizer) handleDeletions(gcalEvents []*googlecalendar.Event) error
 				if err := s.DB.DeleteSyncItem(item.ID); err != nil {
 					log.Printf("Error deleting sync item %d: %v\n", item.ID, err)
 				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Synchronizer) processYTDeletions(deletedYTIDs []string) error {
+	for _, ytID := range deletedYTIDs {
+		syncItem, err := s.DB.GetSyncItemByYTID(ytID)
+		if err != nil {
+			log.Printf("Error getting sync item for YouTrack issue %s: %v\n", ytID, err)
+			continue
+		}
+
+		if syncItem != nil && syncItem.GCalID.Valid {
+			log.Printf("YouTrack issue %s was deleted. Deleting Google Calendar event %s.", ytID, syncItem.GCalID.String)
+			err := s.GoogleCalendarClient.DeleteEvent(s.CalendarID, syncItem.GCalID.String)
+			if err != nil {
+				log.Printf("Error deleting Google Calendar event %s: %v\n", syncItem.GCalID.String, err)
+			}
+			if err := s.DB.DeleteSyncItem(syncItem.ID); err != nil {
+				log.Printf("Error deleting sync item %d: %v\n", syncItem.ID, err)
 			}
 		}
 	}

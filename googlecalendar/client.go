@@ -135,3 +135,8 @@ func (c *Client) UpdateEvent(calendarID, eventID, summary, description string, s
 	}
 	return c.srv.Events.Update(calendarID, eventID, event).Do()
 }
+
+// DeleteEvent deletes a Google Calendar event.
+func (c *Client) DeleteEvent(calendarID, eventID string) error {
+	return c.srv.Events.Delete(calendarID, eventID).Do()
+}

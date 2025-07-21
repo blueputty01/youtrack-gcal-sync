@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	tokenFile    = "token.json"
-	dbFile       = "sync.db"
+	tokenFile    = "data/token.json"
+	dbFile       = "data/sync.db"
 	syncInterval = 24 * time.Hour // Synchronize every 24 hours
 )
 
