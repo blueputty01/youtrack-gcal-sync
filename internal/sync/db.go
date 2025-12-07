@@ -95,13 +95,14 @@ func (db *DB) UpdateIssue(service, id, summary string) error {
 	return nil
 }
 
-type OverlapItem struct {
+type DBItem struct {
 	CalID   string
 	YtID    string
 	Summary string
 }
 
-func (db *DB) GetOverlapItems(serviceItems map[string][]ItemsToUpdate) ([]OverlapItem, error) {
+// GetItems retrieves items that exist in potentially multiple services based on the provided serviceItems map.
+func (db *DB) GetItems(serviceItems map[string][]ItemsToUpdate) ([]DBItem, error) {
 	query := "SELECT cal_id, yt_id, summary FROM sync_items WHERE"
 
 	var queryBuilder strings.Builder
@@ -109,7 +110,7 @@ func (db *DB) GetOverlapItems(serviceItems map[string][]ItemsToUpdate) ([]Overla
 	idx := 0
 	for serviceName, serviceItem := range serviceItems {
 		if idx > 0 {
-			queryBuilder.WriteString(" AND ")
+			queryBuilder.WriteString(" OR ")
 		}
 		queryBuilder.WriteString(fmt.Sprintf("%s IN (", serviceName))
 		for idx, item := range serviceItem {
@@ -133,9 +134,9 @@ func (db *DB) GetOverlapItems(serviceItems map[string][]ItemsToUpdate) ([]Overla
 		}
 	}(rows)
 
-	var overlapItems []OverlapItem
+	var overlapItems []DBItem
 	for rows.Next() {
-		var item OverlapItem
+		var item DBItem
 		if err := rows.Scan(&item.CalID, &item.YtID, &item.Summary); err != nil {
 			return nil, fmt.Errorf("failed to scan overlap item: %w", err)
 		}
