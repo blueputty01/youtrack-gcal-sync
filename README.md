@@ -45,10 +45,14 @@ At the top of the hour, the syncing service will run and check for changes acros
 efficient than listening for changes, however is a better fit for the requirement that this service must be able to
 recover after imposed downtime.
 
-## Handling changes in Youtrack (YT)
+There are 3 scenarios:
 
-The DB will be queried for the earliest "last updated" time. YT will then be queried for events modified after this
-time.
+- YT changed task
+- GC changed task
+- Both changed task
+  - The last updated time will win
+
+## Handling changes in Youtrack (YT)
 
 YT does not surface deletions very well. Thus, every night this service will query YT for each event. If an event is
 found to not exist, it will be marked for deletion.
