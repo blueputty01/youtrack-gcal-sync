@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
+	"iter"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -91,4 +93,57 @@ func (db *DB) UpdateIssue(service, id, summary string) error {
 		return fmt.Errorf("failed to update calendar event: %w", err)
 	}
 	return nil
+}
+
+type OverlapItem struct {
+	CalID   string
+	YtID    string
+	Summary string
+}
+
+func (db *DB) GetOverlapItems(serviceItems map[string][]ItemsToUpdate) ([]OverlapItem, error) {
+	query := "SELECT cal_id, yt_id, summary FROM sync_items WHERE"
+
+	var queryBuilder strings.Builder
+
+	idx := 0
+	for serviceName, serviceItem := range serviceItems {
+		if idx > 0 {
+			queryBuilder.WriteString(" AND ")
+		}
+		queryBuilder.WriteString(fmt.Sprintf("%s IN (", serviceName))
+		for idx, item := range serviceItem {
+			if idx > 0 {
+				queryBuilder.WriteString(",")
+			}
+			queryBuilder.WriteString(item.ID)
+		}
+		queryBuilder.WriteString(")")
+		idx += 1
+	}
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query overlap serviceItems: %w", err)
+	}
+	defer func(rows *sql.Rows) {
+		err := rows.Close()
+		if err != nil {
+			slog.Error("Failed to close rows:", err)
+		}
+	}(rows)
+
+	var overlapItems []OverlapItem
+	for rows.Next() {
+		var item OverlapItem
+		if err := rows.Scan(&item.CalID, &item.YtID, &item.Summary); err != nil {
+			return nil, fmt.Errorf("failed to scan overlap item: %w", err)
+		}
+		overlapItems = append(overlapItems, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating over overlap serviceItems: %w", err)
+	}
+
+	return overlapItems, nil
 }

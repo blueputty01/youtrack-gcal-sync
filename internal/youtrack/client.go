@@ -28,16 +28,16 @@ func NewClient(baseURL, apiToken string, httpClient *http.Client) *Client {
 	}
 }
 
-func (c *Client) GetUpdatedItems(projectID string, since time.Time) ([]sync.SyncItem, error) {
+func (c *Client) GetUpdatedItems(projectID string, since time.Time) ([]sync.ItemsToUpdate, error) {
 	issues, err := c.getUpdatedIssues(projectID, since)
 	if err != nil {
 		return nil, err
 	}
 
-	var items []sync.SyncItem
+	var items []sync.ItemsToUpdate
 	for _, issue := range issues {
 		updatedTime := time.Unix(issue.Updated/1000, 0)
-		item := sync.SyncItem{
+		item := sync.ItemsToUpdate{
 			ID:      issue.ID,
 			Updated: updatedTime,
 			Summary: issue.Summary,
