@@ -17,6 +17,8 @@ From this point on, markdown files, events, and tasks will be referred to simply
 The server will maintain an internal DB of all events. This is because, after the first sync, updates will only be
 incremental.
 
+Clients will all implement a shared interface so that they are plug and playable.
+
 ## Database Design
 
 ```postgresql
@@ -31,13 +33,7 @@ CREATE TABLE IF NOT EXISTS sync_items
 
 CREATE INDEX IF NOT EXISTS idx_sync_items_gcal_id ON sync_items (gcal_id);
 CREATE INDEX IF NOT EXISTS idx_sync_items_yt_id ON sync_items (yt_id);
-
-CREATE INDEX IF NOT EXISTS idx_sync_items_gcal_updated_at ON sync_items (gcal_updated_at);
-CREATE INDEX IF NOT EXISTS idx_sync_items_yt_updated_at ON sync_items (yt_updated_at);
 ```
-
-The `updated_at` columns define the last time the information was refreshed against its source (Youtrack, Google
-Calendar). This allows for elegant recovery from failures in the middle of a sync.
 
 ## Handling changes (generally)
 
@@ -50,7 +46,7 @@ There are 3 scenarios:
 - YT changed task
 - GC changed task
 - Both changed task
-  - The last updated time will win
+  - The changes will be concatenated, thus allowing the user to resolve the conflict in their preferred editor.
 
 ## Handling changes in Youtrack (YT)
 
