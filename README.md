@@ -1,6 +1,8 @@
 # Overview
 
-This project syncs Google Calendar events with Youtrack tasks. Eventually, it will also sync to markdown files.
+This project keeps calendar events, project management boards, and markdown notes in sync.
+
+This branch tracks the rewrite of the project to be much more robust and flexible.
 
 The sync shall be such that changes at any endpoint also update the other services.
 
