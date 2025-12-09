@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ func NewClient(baseURL, apiToken string, httpClient *http.Client) *Client {
 	return &Client{
 		BaseURL:    strings.Trim(baseURL, "/"),
 		APIToken:   apiToken,
-		httpClient: &http.Client{},
+		httpClient: httpClient,
 	}
 }
 
@@ -101,11 +102,86 @@ func (c *Client) doQuery(query string) (*http.Response, error) {
 	return c.httpClient.Do(req)
 }
 
-func (c *Client) CreateItem(item *sync.ItemsToUpdate) (string, error) {
+// consider combining with updateitem
 
+func (c *Client) CreateItem(item *sync.ItemsToUpdate) (string, error) {
+	if item == nil {
+		return "", fmt.Errorf("item is nil")
+	}
+
+	endpoint := fmt.Sprintf("%s/api/issues?fields=id", c.BaseURL)
+	res, err := c.doJSONRequest(http.MethodPost, endpoint, map[string]any{
+		"summary": item.Summary,
+	}, http.StatusOK, http.StatusCreated)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		return "", fmt.Errorf("failed to decode issue creation response: %w", err)
+	}
+	if created.ID == "" {
+		return "", fmt.Errorf("issue creation response missing id")
+	}
+
+	return created.ID, nil
 }
 
+// UpdateItem impelements https://www.jetbrains.com/help/youtrack/devportal/operations-api-issues.html#update-Issue-method
 func (c *Client) UpdateItem(item *sync.ItemsToUpdate) error {
-	//TODO implement me
-	panic("implement me")
+	if item == nil {
+		return fmt.Errorf("item is nil")
+	}
+	if item.ID == "" {
+		return fmt.Errorf("item id is required for update")
+	}
+
+	endpoint := fmt.Sprintf("%s/api/issues/%s?fields=id", c.BaseURL, url.PathEscape(item.ID))
+	res, err := c.doJSONRequest(http.MethodPost, endpoint, map[string]any{
+		"summary": item.Summary,
+	}, http.StatusOK)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	return nil
+}
+
+func (c *Client) doJSONRequest(method, endpoint string, payload any, expectedStatus ...int) (*http.Response, error) {
+	var body io.Reader
+	if payload != nil {
+		buf, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal payload: %w", err)
+		}
+		body = bytes.NewReader(buf)
+	}
+
+	req, err := http.NewRequest(method, endpoint, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+
+	for _, code := range expectedStatus {
+		if res.StatusCode == code {
+			return res, nil
+		}
+	}
+
+	bodyBytes, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	return nil, fmt.Errorf("unexpected status code %d: %s", res.StatusCode, string(bodyBytes))
 }
