@@ -1,4 +1,4 @@
-package youtrack
+package projects
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -16,19 +17,29 @@ type Client struct {
 	httpClient *http.Client
 }
 
+const ServiceName = "youtrack"
+
+func (c *Client) GetUpdatedItems(since time.Time) ([]sync.ItemsToUpdate, error) {
+	return nil, nil
+}
+
+func (c *Client) GetServiceName() string {
+	return ServiceName
+}
+
 func NewClient(baseURL, apiToken string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
 
 	return &Client{
-		BaseURL:    baseURL,
+		BaseURL:    strings.Trim(baseURL, "/"),
 		APIToken:   apiToken,
 		httpClient: &http.Client{},
 	}
 }
 
-func (c *Client) GetUpdatedItems(projectID string, since time.Time) ([]sync.ItemsToUpdate, error) {
+func (c *Client) getUpdatedItems(projectID string, since time.Time) ([]sync.ItemsToUpdate, error) {
 	issues, err := c.getUpdatedIssues(projectID, since)
 	if err != nil {
 		return nil, err
@@ -77,7 +88,7 @@ func (c *Client) getUpdatedIssues(projectID string, since time.Time) ([]Issue, e
 }
 
 func (c *Client) doQuery(query string) (*http.Response, error) {
-	requestUrl := fmt.Sprintf("%s/issues?query=%s&fields=id,idReadable,summary,description,updated,project(id,name,shortName),customFields(id,name,value($type,name,value))", c.BaseURL, url.QueryEscape(query))
+	requestUrl := fmt.Sprintf("%s/api/issues?query=%s&fields=id,idReadable,summary,description,updated,project(id,name,shortName),customFields(id,name,value($type,name,value))", c.BaseURL, url.QueryEscape(query))
 	fmt.Printf("Fetching updated issues with query: %s\n", requestUrl)
 	req, err := http.NewRequest("GET", requestUrl, nil)
 	if err != nil {
@@ -87,4 +98,14 @@ func (c *Client) doQuery(query string) (*http.Response, error) {
 	req.Header.Set("Accept", "application/json")
 
 	return c.httpClient.Do(req)
+}
+
+func (c *Client) CreateItem(item sync.ItemsToUpdate) (string, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (c *Client) UpdateItem(item sync.ItemsToUpdate) error {
+	//TODO implement me
+	panic("implement me")
 }

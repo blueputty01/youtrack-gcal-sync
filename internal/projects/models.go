@@ -1,4 +1,4 @@
-package youtrack
+package projects
 
 type Issue struct {
 	ID         string   `json:"id,omitempty"`
