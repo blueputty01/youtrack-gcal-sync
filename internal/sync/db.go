@@ -38,7 +38,7 @@ func NewDB(dataSourceName string, services []string) (*DBClient, error) {
 
 func servicesWithSuffix(services []string) []string {
 	suffixedServices := make([]string, len(services))
-	for i, service := range suffixedServices {
+	for i, service := range services {
 		suffixedServices[i] = service + ColumnSuffix
 	}
 	return suffixedServices
@@ -75,9 +75,11 @@ func createSchema(db *sql.DB, services []string) error {
 
 	indexStrings := make([]string, len(suffixedServices))
 	for i, service := range suffixedServices {
-		indexStrings[i] = fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_sync_items_%s_id ON sync_items (%s)", service)
+		indexStrings[i] = fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_sync_items_%s_id ON sync_items (%s)", service, service)
 	}
 	indices := strings.Join(indexStrings, "; ")
+
+	slog.Info("Creating database schema", "Main", mainTable, "Update", updateTable, "Indices", indices)
 	_, err := db.Exec(mainTable + updateTable + indices)
 	return err
 }
