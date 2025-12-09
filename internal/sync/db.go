@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-var TableName = "sync_items"
 var ColumnSuffix = "_id"
 
 type DBClient struct {
@@ -36,6 +35,11 @@ func NewDB(dataSourceName string, services []string) (*DBClient, error) {
 	return &DBClient{db, services, servicesWithSuffix(services)}, nil
 }
 
+type DBItem struct {
+	ids     map[string]string
+	Summary string
+}
+
 func servicesWithSuffix(services []string) []string {
 	suffixedServices := make([]string, len(services))
 	for i, service := range services {
@@ -53,12 +57,12 @@ func createSchema(db *sql.DB, services []string) error {
 	}
 
 	mainTable := fmt.Sprintf(`
-	CREATE TABLE IF NOT EXISTS %s (
+	CREATE TABLE IF NOT EXISTS sync_items (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		summary TEXT,
 		%s
 	);
-	`, TableName, strings.Join(serviceColumns, ", "))
+	`, strings.Join(serviceColumns, ", "))
 
 	quotedServices := make([]string, len(services))
 	for i, service := range services {
@@ -107,24 +111,52 @@ func (c *DBClient) UpdateLastSyncTimestamp(service string, timestamp int64) erro
 }
 
 func (c *DBClient) isValidColumn(col string) bool {
-	return utils.ArrayContains(c.services, col[:len(col)-len(ColumnSuffix)])
+	return utils.ArrayContains(c.services, col)
 }
 
-func (c *DBClient) UpdateIssue(service, id, summary string) error {
+func (c *DBClient) createUpdateIdQuery(item *DBItem, queryFormat string) (string, []interface{}, error) {
+	updateIdQuery := make([]string, len(item.ids))
+	updateIdValues := make([]interface{}, len(item.ids))
+	idx := 0
+	for itemService, id := range item.ids {
+		if !c.isValidColumn(itemService) {
+			return "", nil, fmt.Errorf("invalid service column: %s", itemService)
+		}
+		updateIdQuery[idx] = fmt.Sprintf(queryFormat, itemService)
+		updateIdValues[idx] = id
+		idx++
+	}
+	return strings.Join(updateIdQuery, ", "), updateIdValues, nil
+}
+
+func (c *DBClient) UpdateItem(service string, serviceId string, item *DBItem) error {
 	if !c.isValidColumn(service) {
 		return fmt.Errorf("invalid service column: %s", service)
 	}
 
-	_, err := c.Exec("INSERT INTO sync_items (?, summary) VALUES (?, ?) ON CONFLICT(?) DO UPDATE SET summary = excluded.summary", service, id, summary, service)
+	updateIdQuery, updateIdValues, err := c.createUpdateIdQuery(item, "%s=(?)")
+	args := append([]interface{}{item.Summary}, updateIdValues...)
+	args = append(args, serviceId)
+
+	_, err = c.Exec(fmt.Sprintf(
+		"UPDATE sync_items SET summary = (?), %s WHERE %s=(?)",
+		updateIdQuery,
+		service), args...)
 	if err != nil {
 		return fmt.Errorf("failed to update calendar event: %w", err)
 	}
 	return nil
 }
 
-type DBItem struct {
-	ids     map[string]string
-	Summary string
+func (c *DBClient) InsertItem(item *DBItem) error {
+	updateIdQuery, updateIdValues, err := c.createUpdateIdQuery(item, "%s")
+	args := append([]interface{}{item.Summary}, updateIdValues...)
+
+	_, err = c.Exec(fmt.Sprintf("INSERT INTO sync_items (summary %s) VALUES (?, ?)", updateIdQuery), args)
+	if err != nil {
+		return fmt.Errorf("failed to update item: %w", err)
+	}
+	return nil
 }
 
 // GetItems retrieves items that exist in potentially multiple services based on the provided serviceItems map.
