@@ -104,18 +104,24 @@ func (s *Synchronizer) Sync() error {
 				// check if other services have also queued updates for this item
 				// delete the other updates to avoid redundant updates
 				// thus also guaranteeing that the current item has not been processed
-				for otherServiceName, otherServiceId := range dbItem.ids {
-					if otherServiceName == serviceName {
-						continue
-					}
-					updateFromOtherService, exists := mappedUpdates[otherServiceName][otherServiceId]
-					if exists {
-						// identify what the change is
-						if dbItem.Summary != updateFromOtherService.Summary {
 
-						}
-						delete(mappedUpdates[otherServiceName], otherServiceId)
+				// store unique summary values and the service where those values originated
+				summary := make(map[string][]string)
+				summary[dbItem.Summary] = make([]string, len(dbItem.ids))
+				date := make(map[time.Time][]string)
+				date[dbItem.StartDate] = make([]string, len(dbItem.ids))
+
+				for serviceName, serviceId := range dbItem.ids {
+					queuedUpdate, exists := mappedUpdates[serviceName][serviceId]
+					if exists {
+						summary[queuedUpdate.Summary] = append(summary[queuedUpdate.Summary], serviceName)
+						date[queuedUpdate.StartDate] = append(date[queuedUpdate.StartDate], serviceName)
+						delete(mappedUpdates[serviceName], serviceId)
 					}
+				}
+
+				if len(summary) > 1 {
+
 				}
 			}
 		}
