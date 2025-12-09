@@ -1,9 +1,13 @@
 package sync
 
-import "time"
+import (
+	"time"
+)
 
 type Synchronizer struct {
-	db *DB
+	db            *DBClient
+	Clients       []Client
+	mappedClients map[string]Client
 }
 
 type ItemsToUpdate struct {
@@ -15,42 +19,116 @@ type ItemsToUpdate struct {
 type Client interface {
 	GetUpdatedItems(since time.Time) ([]ItemsToUpdate, error)
 	GetServiceName() string
+	// CreateItem creates a new item in the external service and returns its ID.
+	CreateItem(item ItemsToUpdate) (string, error)
+	UpdateItem(item ItemsToUpdate) error
 }
 
-func NewSynchronizer(dataSourceName string) (*Synchronizer, error) {
-	db, err := NewDB(dataSourceName)
+func NewSynchronizer(dataSourceName string, clients []Client) (*Synchronizer, error) {
+	services := make([]string, len(clients))
+	for i, client := range clients {
+		services[i] = client.GetServiceName()
+	}
+
+	db, err := NewDB(dataSourceName, services)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Synchronizer{db: db}, nil
+	synchronizer := &Synchronizer{db: db, Clients: clients}
+	synchronizer.mappedClients = make(map[string]Client)
+	for _, client := range clients {
+		synchronizer.mappedClients[client.GetServiceName()] = client
+	}
+
+	return synchronizer, nil
 }
 
-func (s *Synchronizer) Sync(clients []Client) error {
+func (s *Synchronizer) Sync() error {
+	totalChangedItems := 0
+	// map from service name to list of updated items
 	updates := make(map[string][]ItemsToUpdate)
-	for _, client := range clients {
+	for _, client := range s.Clients {
 		timestamp, err := s.db.GetLastSyncTimestamp(client.GetServiceName())
 		if err != nil {
 			return err
 		}
 
 		updatedItems, err := client.GetUpdatedItems(timestamp)
+
 		if err != nil {
 			return err
 		}
 
 		updates[client.GetServiceName()] = updatedItems
+		totalChangedItems += len(updatedItems)
 	}
 
-	items, err := s.db.GetOverlapItems(updates)
+	mappedDBItems, _, err := s.getMappedDBItems(updates)
 	if err != nil {
 		return err
 	}
 
-	resolvedItems := make(map[string]ItemsToUpdate)
-	for _, serviceItems := range updates {
+	for serviceName, items := range updates {
+		for _, item := range items {
+			dbItem, inDB := mappedDBItems[serviceName][item.ID]
+			if !inDB {
+				for otherServiceName, client := range s.mappedClients {
+					if serviceName == otherServiceName {
+						continue
+					}
 
+					newId, err := client.CreateItem(item)
+					if err != nil {
+						return err
+					}
+					dbItem.ids[otherServiceName] = newId
+				}
+				err = s.db.InsertItem(dbItem)
+				if err != nil {
+					return err
+				}
+			} else {
+				// check if other services have also queued updates for this item
+				// delete the other updates to avoid redundant updates
+				// thus also guaranteeing that the current item has not been processed
+				for otherServiceName, otherServiceId := range dbItem.ids {
+					if otherServiceName == serviceName {
+						continue
+					}
+					if updates[otherServiceName][otherServiceId] != nil {
+						// identify what the change is
+						delete(updates[otherServiceName], otherServiceId)
+					}
+				}
+			}
+		}
 	}
 
 	return nil
+}
+
+// getMappedDBItems retrieves the database rows that correspond to the provided updates
+// and maps them by service name and item ID.
+// Thus, a single database item may be referenced by multiple services.
+// Therefore, the return value is a map of service name -> map of item ID -> *DBItem along with
+// the actual DBItem's
+func (s *Synchronizer) getMappedDBItems(updates map[string][]ItemsToUpdate) (map[string]map[string]*DBItem, []DBItem, error) {
+	dbItems, err := s.db.GetItems(updates)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// map of service name -> map of item ID -> *DBItem
+	mappedDBItems := make(map[string]map[string]*DBItem)
+	for _, item := range dbItems {
+		for serviceName := range item.ids {
+			if _, found := mappedDBItems[serviceName]; !found {
+				mappedDBItems[serviceName] = make(map[string]*DBItem)
+			}
+			mappedDBItems[serviceName][item.ids[serviceName]] = &item
+		}
+	}
+
+	return mappedDBItems, dbItems, nil
 }
