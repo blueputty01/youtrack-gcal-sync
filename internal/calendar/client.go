@@ -1,9 +1,10 @@
 package calendar
 
 import (
-	"github.com/blueputty01/task-sync/internal/sync"
 	"net/http"
 	"time"
+
+	"github.com/blueputty01/task-sync/internal/sync"
 )
 
 const ServiceName = "calendar"
@@ -23,12 +24,12 @@ func (c *Client) GetUpdatedItems(since time.Time) ([]sync.ItemsToUpdate, error) 
 	panic("implement me")
 }
 
-func (c *Client) CreateItem(item sync.ItemsToUpdate) (string, error) {
+func (c *Client) CreateItem(item *sync.ItemsToUpdate) (string, error) {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (c *Client) UpdateItem(item sync.ItemsToUpdate) error {
+func (c *Client) UpdateItem(item *sync.ItemsToUpdate) error {
 	//TODO implement me
 	panic("implement me")
 }

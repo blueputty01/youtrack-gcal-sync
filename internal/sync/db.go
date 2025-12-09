@@ -4,11 +4,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/blueputty01/task-sync/internal/utils"
-	_ "github.com/mattn/go-sqlite3"
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/blueputty01/task-sync/internal/utils"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 var ColumnSuffix = "_id"
@@ -36,8 +37,9 @@ func NewDB(dataSourceName string, services []string) (*DBClient, error) {
 }
 
 type DBItem struct {
-	ids     map[string]string
-	Summary string
+	ids       map[string]string
+	Summary   string
+	StartDate time.Time
 }
 
 func servicesWithSuffix(services []string) []string {
@@ -48,7 +50,6 @@ func servicesWithSuffix(services []string) []string {
 	return suffixedServices
 }
 
-// TODO consider making this table dynamic based on the services used
 func createSchema(db *sql.DB, services []string) error {
 	suffixedServices := servicesWithSuffix(services)
 	serviceColumns := make([]string, len(services))
@@ -60,6 +61,7 @@ func createSchema(db *sql.DB, services []string) error {
 	CREATE TABLE IF NOT EXISTS sync_items (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		summary TEXT,
+		startDate INTEGER,
 		%s
 	);
 	`, strings.Join(serviceColumns, ", "))
@@ -114,19 +116,18 @@ func (c *DBClient) isValidColumn(col string) bool {
 	return utils.ArrayContains(c.services, col)
 }
 
-func (c *DBClient) createUpdateIdQuery(item *DBItem, queryFormat string) (string, []interface{}, error) {
-	updateIdQuery := make([]string, len(item.ids))
-	updateIdValues := make([]interface{}, len(item.ids))
-	idx := 0
+func (c *DBClient) createUpdateIdQuery(item *DBItem, queryFormat string) ([]string, []interface{}, error) {
+	updateIdQuery := make([]string, 0, len(item.ids))
+	updateIdValues := make([]interface{}, 0, len(item.ids))
 	for itemService, id := range item.ids {
 		if !c.isValidColumn(itemService) {
-			return "", nil, fmt.Errorf("invalid service column: %s", itemService)
+			return nil, nil, fmt.Errorf("invalid service column: %s", itemService)
 		}
-		updateIdQuery[idx] = fmt.Sprintf(queryFormat, itemService)
-		updateIdValues[idx] = id
-		idx++
+		columnName := itemService + ColumnSuffix
+		updateIdQuery = append(updateIdQuery, fmt.Sprintf(queryFormat, columnName))
+		updateIdValues = append(updateIdValues, id)
 	}
-	return strings.Join(updateIdQuery, ", "), updateIdValues, nil
+	return updateIdQuery, updateIdValues, nil
 }
 
 func (c *DBClient) UpdateItem(service string, serviceId string, item *DBItem) error {
@@ -135,13 +136,22 @@ func (c *DBClient) UpdateItem(service string, serviceId string, item *DBItem) er
 	}
 
 	updateIdQuery, updateIdValues, err := c.createUpdateIdQuery(item, "%s=(?)")
-	args := append([]interface{}{item.Summary}, updateIdValues...)
+	if err != nil {
+		return err
+	}
+
+	setClauses := []string{"summary = (?)", "startDate = (?)"}
+	if len(updateIdQuery) > 0 {
+		setClauses = append(setClauses, updateIdQuery...)
+	}
+
+	args := append([]interface{}{item.Summary, item.StartDate.Unix()}, updateIdValues...)
 	args = append(args, serviceId)
 
 	_, err = c.Exec(fmt.Sprintf(
-		"UPDATE sync_items SET summary = (?), %s WHERE %s=(?)",
-		updateIdQuery,
-		service), args...)
+		"UPDATE sync_items SET %s WHERE %s=(?)",
+		strings.Join(setClauses, ", "),
+		service+ColumnSuffix), args...)
 	if err != nil {
 		return fmt.Errorf("failed to update calendar event: %w", err)
 	}
@@ -150,9 +160,25 @@ func (c *DBClient) UpdateItem(service string, serviceId string, item *DBItem) er
 
 func (c *DBClient) InsertItem(item *DBItem) error {
 	updateIdQuery, updateIdValues, err := c.createUpdateIdQuery(item, "%s")
-	args := append([]interface{}{item.Summary}, updateIdValues...)
+	if err != nil {
+		return err
+	}
 
-	_, err = c.Exec(fmt.Sprintf("INSERT INTO sync_items (summary %s) VALUES (?, ?)", updateIdQuery), args)
+	columns := []string{"summary", "startDate"}
+	placeholders := []string{"?", "?"}
+	args := []interface{}{item.Summary, item.StartDate.Unix()}
+
+	if len(updateIdQuery) > 0 {
+		columns = append(columns, updateIdQuery...)
+		for range updateIdQuery {
+			placeholders = append(placeholders, "?")
+		}
+		args = append(args, updateIdValues...)
+	}
+
+	_, err = c.Exec(
+		fmt.Sprintf("INSERT INTO sync_items (%s) VALUES (%s)", strings.Join(columns, ", "), strings.Join(placeholders, ", ")),
+		args...)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %w", err)
 	}
@@ -161,27 +187,36 @@ func (c *DBClient) InsertItem(item *DBItem) error {
 
 // GetItems retrieves items that exist in potentially multiple services based on the provided serviceItems map.
 func (c *DBClient) GetItems(serviceItems map[string][]ItemsToUpdate) ([]DBItem, error) {
-	query := fmt.Sprintf("SELECT %s, summary FROM sync_items WHERE", strings.Join(c.columnNames, ", "))
+	columnsToSelect := append(append([]string{}, c.columnNames...), "summary", "startDate")
+	query := fmt.Sprintf("SELECT %s FROM sync_items WHERE", strings.Join(columnsToSelect, ", "))
 
-	var queryBuilder strings.Builder
+	var (
+		queryBuilder strings.Builder
+		args         []interface{}
+	)
 
 	idx := 0
 	for serviceName, serviceItem := range serviceItems {
+		if !c.isValidColumn(serviceName) {
+			return nil, fmt.Errorf("invalid service column: %s", serviceName)
+		}
+
 		if idx > 0 {
 			queryBuilder.WriteString(" OR ")
 		}
-		queryBuilder.WriteString(fmt.Sprintf("%s IN (", serviceName))
-		for idx, item := range serviceItem {
-			if idx > 0 {
-				queryBuilder.WriteString(",")
+		queryBuilder.WriteString(fmt.Sprintf("%s IN (", serviceName+ColumnSuffix))
+		for itemIdx, item := range serviceItem {
+			if itemIdx > 0 {
+				queryBuilder.WriteString(", ")
 			}
-			queryBuilder.WriteString(item.ID)
+			queryBuilder.WriteString("?")
+			args = append(args, item.ID)
 		}
 		queryBuilder.WriteString(")")
 		idx += 1
 	}
 
-	rows, err := c.Query(query)
+	rows, err := c.Query(query+" "+queryBuilder.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query overlap serviceItems: %w", err)
 	}
@@ -194,30 +229,33 @@ func (c *DBClient) GetItems(serviceItems map[string][]ItemsToUpdate) ([]DBItem, 
 
 	var overlapItems []DBItem
 
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	// Create a slice of interface{} pointers for scanning
-	// Allocate one for each column
-	scanValues := make([]interface{}, len(columns))
-	for i := range scanValues {
-		scanValues[i] = new(sql.NullString)
-	}
-
 	for rows.Next() {
 		var item DBItem
-
 		item.ids = make(map[string]string)
-		ids := make([]string, len(c.services))
 
-		for idx, col := range c.columnNames {
-			item.ids[col] = ids[idx]
+		idValues := make([]sql.NullString, len(c.columnNames))
+		var summary sql.NullString
+		var date sql.NullInt64
+
+		scanTargets := make([]interface{}, 0, len(c.columnNames)+2)
+		for i := range idValues {
+			scanTargets = append(scanTargets, &idValues[i])
+		}
+		scanTargets = append(scanTargets, &summary, &date)
+
+		if err := rows.Scan(scanTargets...); err != nil {
+			return nil, fmt.Errorf("failed to scan overlap item: %w", err)
 		}
 
-		if err := rows.Scan(ids, &item.Summary); err != nil {
-			return nil, fmt.Errorf("failed to scan overlap item: %w", err)
+		for idx, col := range c.columnNames {
+			if idValues[idx].Valid {
+				serviceName := strings.TrimSuffix(col, ColumnSuffix)
+				item.ids[serviceName] = idValues[idx].String
+			}
+		}
+		item.Summary = summary.String
+		if date.Valid {
+			item.StartDate = time.Unix(date.Int64, 0)
 		}
 		overlapItems = append(overlapItems, item)
 	}

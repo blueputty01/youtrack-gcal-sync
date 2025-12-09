@@ -3,12 +3,13 @@ package projects
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/blueputty01/task-sync/internal/sync"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/blueputty01/task-sync/internal/sync"
 )
 
 type Client struct {
@@ -100,12 +101,11 @@ func (c *Client) doQuery(query string) (*http.Response, error) {
 	return c.httpClient.Do(req)
 }
 
-func (c *Client) CreateItem(item sync.ItemsToUpdate) (string, error) {
-	//TODO implement me
-	panic("implement me")
+func (c *Client) CreateItem(item *sync.ItemsToUpdate) (string, error) {
+
 }
 
-func (c *Client) UpdateItem(item sync.ItemsToUpdate) error {
+func (c *Client) UpdateItem(item *sync.ItemsToUpdate) error {
 	//TODO implement me
 	panic("implement me")
 }

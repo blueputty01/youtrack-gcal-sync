@@ -13,15 +13,17 @@ type Synchronizer struct {
 type ItemsToUpdate struct {
 	ID      string
 	Updated time.Time
-	Summary string
+
+	Summary   string
+	StartDate time.Time
 }
 
 type Client interface {
 	GetUpdatedItems(since time.Time) ([]ItemsToUpdate, error)
 	GetServiceName() string
 	// CreateItem creates a new item in the external service and returns its ID.
-	CreateItem(item ItemsToUpdate) (string, error)
-	UpdateItem(item ItemsToUpdate) error
+	CreateItem(item *ItemsToUpdate) (string, error)
+	UpdateItem(item *ItemsToUpdate) error
 }
 
 func NewSynchronizer(dataSourceName string, clients []Client) (*Synchronizer, error) {
@@ -69,6 +71,16 @@ func (s *Synchronizer) Sync() error {
 		return err
 	}
 
+	mappedUpdates := make(map[string]map[string]*ItemsToUpdate)
+	for serviceName, items := range updates {
+		if _, found := mappedUpdates[serviceName]; !found {
+			mappedUpdates[serviceName] = make(map[string]*ItemsToUpdate)
+		}
+		for i := range items {
+			mappedUpdates[serviceName][items[i].ID] = &items[i]
+		}
+	}
+
 	for serviceName, items := range updates {
 		for _, item := range items {
 			dbItem, inDB := mappedDBItems[serviceName][item.ID]
@@ -78,7 +90,7 @@ func (s *Synchronizer) Sync() error {
 						continue
 					}
 
-					newId, err := client.CreateItem(item)
+					newId, err := client.CreateItem(&item)
 					if err != nil {
 						return err
 					}
@@ -96,9 +108,13 @@ func (s *Synchronizer) Sync() error {
 					if otherServiceName == serviceName {
 						continue
 					}
-					if updates[otherServiceName][otherServiceId] != nil {
+					updateFromOtherService, exists := mappedUpdates[otherServiceName][otherServiceId]
+					if exists {
 						// identify what the change is
-						delete(updates[otherServiceName], otherServiceId)
+						if dbItem.Summary != updateFromOtherService.Summary {
+
+						}
+						delete(mappedUpdates[otherServiceName], otherServiceId)
 					}
 				}
 			}
