@@ -83,7 +83,7 @@ func (s *Synchronizer) Sync() error {
 
 	for serviceName, items := range updates {
 		for _, item := range items {
-			dbItem, inDB := mappedDBItems[serviceName][item.ID]
+			originalDBItem, inDB := mappedDBItems[serviceName][item.ID]
 			if !inDB {
 				for otherServiceName, client := range s.mappedClients {
 					if serviceName == otherServiceName {
@@ -94,9 +94,12 @@ func (s *Synchronizer) Sync() error {
 					if err != nil {
 						return err
 					}
-					dbItem.ids[otherServiceName] = newId
+					originalDBItem.ids[otherServiceName] = newId
 				}
-				err = s.db.InsertItem(dbItem)
+				originalDBItem.Summary = item.Summary
+				originalDBItem.StartDate = item.StartDate
+				originalDBItem.ids[serviceName] = item.ID
+				err = s.db.InsertItem(originalDBItem)
 				if err != nil {
 					return err
 				}
@@ -107,11 +110,11 @@ func (s *Synchronizer) Sync() error {
 
 				// store unique summary values and the service where those values originated
 				summary := make(map[string][]string)
-				summary[dbItem.Summary] = make([]string, len(dbItem.ids))
+				summary[originalDBItem.Summary] = make([]string, len(originalDBItem.ids))
 				date := make(map[time.Time][]string)
-				date[dbItem.StartDate] = make([]string, len(dbItem.ids))
+				date[originalDBItem.StartDate] = make([]string, len(originalDBItem.ids))
 
-				for serviceName, serviceId := range dbItem.ids {
+				for serviceName, serviceId := range originalDBItem.ids {
 					queuedUpdate, exists := mappedUpdates[serviceName][serviceId]
 					if exists {
 						summary[queuedUpdate.Summary] = append(summary[queuedUpdate.Summary], serviceName)
@@ -120,9 +123,6 @@ func (s *Synchronizer) Sync() error {
 					}
 				}
 
-				if len(summary) > 1 {
-
-				}
 			}
 		}
 	}
