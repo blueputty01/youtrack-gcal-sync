@@ -33,7 +33,10 @@ type Client interface {
 	GetServiceName() string
 	// CreateItem creates a new item in the external service and returns its ID.
 	CreateItem(item BasicItem) (string, error)
-	UpdateItem(item BasicItem) error
+	UpdateItem(item ExistingItem) error
+
+	CompleteItem(itemID string) error
+	DeleteItem(itemID string) error
 }
 
 func NewSynchronizer(dataSourceName string, clients []Client) (*Synchronizer, error) {
@@ -133,6 +136,8 @@ func (s *Synchronizer) Sync() error {
 				}
 
 				finalItem := resolveConflict(originalDBItem, toUpdate)
+
+				// start propagating changes
 				// extend toUpdate to also include the state of other unqueued services
 				for serviceName, serviceId := range originalDBItem.ids {
 					if _, exists := toUpdate[serviceName]; !exists {
@@ -155,7 +160,7 @@ func (s *Synchronizer) Sync() error {
 					needsUpdate = itemState.StartDate != finalItem.StartDate || needsUpdate
 					if needsUpdate {
 						client := s.mappedClients[serviceName]
-						err = client.UpdateItem(finalItem)
+						err = client.UpdateItem(ExistingItem{BasicItem: finalItem, ID: itemState.ID})
 						if err != nil {
 							return err
 						}

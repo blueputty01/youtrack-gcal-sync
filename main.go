@@ -35,8 +35,9 @@ func constructYoutrackClient() *projects.Client {
 	if !found {
 		slog.Error("YOUTRACK_URL environment variable not set")
 	}
-	return projects.NewClient(url, token, nil)
+	return projects.NewClient(url, token, []string{"General", "School"}, nil)
 }
+
 func constructGoogleCalendarClient() *calendar.Client {
-	return calendar.NewClient()
+	return calendar.NewClient(nil)
 }
