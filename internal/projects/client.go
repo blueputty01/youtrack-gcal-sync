@@ -21,7 +21,7 @@ type Client struct {
 
 const ServiceName = "youtrack"
 
-func (c *Client) GetUpdatedItems(since time.Time) ([]sync.ItemsToUpdate, error) {
+func (c *Client) GetUpdatedItems(since time.Time) ([]sync.UpdatedItem, error) {
 	return nil, nil
 }
 
@@ -41,19 +41,24 @@ func NewClient(baseURL, apiToken string, httpClient *http.Client) *Client {
 	}
 }
 
-func (c *Client) getUpdatedItems(projectID string, since time.Time) ([]sync.ItemsToUpdate, error) {
+func (c *Client) getUpdatedItems(projectID string, since time.Time) ([]sync.UpdatedItem, error) {
 	issues, err := c.getUpdatedIssues(projectID, since)
 	if err != nil {
 		return nil, err
 	}
 
-	var items []sync.ItemsToUpdate
+	var items []sync.UpdatedItem
 	for _, issue := range issues {
 		updatedTime := time.Unix(issue.Updated/1000, 0)
-		item := sync.ItemsToUpdate{
-			ID:      issue.ID,
+		item := sync.UpdatedItem{
+			ExistingItem: sync.ExistingItem{
+				ID: issue.ID,
+				BasicItem: sync.BasicItem{
+					StartDate: updatedTime,
+					Summary:   issue.Summary,
+				},
+			},
 			Updated: updatedTime,
-			Summary: issue.Summary,
 		}
 		items = append(items, item)
 	}
@@ -62,7 +67,7 @@ func (c *Client) getUpdatedItems(projectID string, since time.Time) ([]sync.Item
 }
 
 func (c *Client) getUpdatedIssues(projectID string, since time.Time) ([]Issue, error) {
-	query := fmt.Sprintf("project:%s updated: %s .. {now}", projectID, since.Format("2006-01-02T15:04:05"))
+	query := fmt.Sprintf("project:%s updated: {%s} .. {now}", projectID, since.Format("2006-01-02T15:04:05"))
 	res, err := c.doQuery(query)
 
 	if err != nil {
@@ -104,7 +109,7 @@ func (c *Client) doQuery(query string) (*http.Response, error) {
 
 // consider combining with updateitem
 
-func (c *Client) CreateItem(item *sync.ItemsToUpdate) (string, error) {
+func (c *Client) CreateItem(item *sync.UpdatedItem) (string, error) {
 	if item == nil {
 		return "", fmt.Errorf("item is nil")
 	}
@@ -132,7 +137,7 @@ func (c *Client) CreateItem(item *sync.ItemsToUpdate) (string, error) {
 }
 
 // UpdateItem impelements https://www.jetbrains.com/help/youtrack/devportal/operations-api-issues.html#update-Issue-method
-func (c *Client) UpdateItem(item *sync.ItemsToUpdate) error {
+func (c *Client) UpdateItem(item *sync.UpdatedItem) error {
 	if item == nil {
 		return fmt.Errorf("item is nil")
 	}

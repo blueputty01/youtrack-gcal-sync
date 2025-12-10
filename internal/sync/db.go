@@ -104,8 +104,8 @@ func (c *DBClient) GetLastSyncTimestamp(service string) (time.Time, error) {
 	return time.Unix(rawTime, 0), nil
 }
 
-func (c *DBClient) UpdateLastSyncTimestamp(service string, timestamp int64) error {
-	_, err := c.Exec("INSERT INTO last_sync (service, timestamp) VALUES (?, ?) ON CONFLICT(service) DO UPDATE SET timestamp = excluded.timestamp", service, timestamp)
+func (c *DBClient) UpdateLastSyncTimestamp(service string, timestamp time.Time) error {
+	_, err := c.Exec("INSERT INTO last_sync (service, timestamp) VALUES (?, ?) ON CONFLICT(service) DO UPDATE SET timestamp = excluded.timestamp", service, timestamp.Unix())
 	if err != nil {
 		return fmt.Errorf("failed to update last sync timestamp: %w", err)
 	}
@@ -186,7 +186,7 @@ func (c *DBClient) InsertItem(item *DBItem) error {
 }
 
 // GetItems retrieves items that exist in potentially multiple services based on the provided serviceItems map.
-func (c *DBClient) GetItems(serviceItems map[string][]ItemsToUpdate) ([]DBItem, error) {
+func (c *DBClient) GetItems(serviceItems map[string][]UpdatedItem) ([]DBItem, error) {
 	columnsToSelect := append(append([]string{}, c.columnNames...), "summary", "startDate")
 	query := fmt.Sprintf("SELECT %s FROM sync_items WHERE", strings.Join(columnsToSelect, ", "))
 

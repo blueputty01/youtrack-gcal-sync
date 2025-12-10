@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"strings"
 	"time"
 )
 
@@ -10,20 +11,29 @@ type Synchronizer struct {
 	mappedClients map[string]Client
 }
 
-type ItemsToUpdate struct {
-	ID      string
-	Updated time.Time
-
+type BasicItem struct {
 	Summary   string
 	StartDate time.Time
 }
 
+// ExistingItem is an item currently existing in a single service
+type ExistingItem struct {
+	BasicItem
+	ID string
+}
+
+// UpdatedItem is an item that has been updated since the last sync
+type UpdatedItem struct {
+	ExistingItem
+	Updated time.Time
+}
+
 type Client interface {
-	GetUpdatedItems(since time.Time) ([]ItemsToUpdate, error)
+	GetUpdatedItems(since time.Time) ([]UpdatedItem, error)
 	GetServiceName() string
 	// CreateItem creates a new item in the external service and returns its ID.
-	CreateItem(item *ItemsToUpdate) (string, error)
-	UpdateItem(item *ItemsToUpdate) error
+	CreateItem(item BasicItem) (string, error)
+	UpdateItem(item BasicItem) error
 }
 
 func NewSynchronizer(dataSourceName string, clients []Client) (*Synchronizer, error) {
@@ -47,9 +57,10 @@ func NewSynchronizer(dataSourceName string, clients []Client) (*Synchronizer, er
 }
 
 func (s *Synchronizer) Sync() error {
+	syncStartTime := time.Now()
 	totalChangedItems := 0
 	// map from service name to list of updated items
-	updates := make(map[string][]ItemsToUpdate)
+	updates := make(map[string][]UpdatedItem)
 	for _, client := range s.Clients {
 		timestamp, err := s.db.GetLastSyncTimestamp(client.GetServiceName())
 		if err != nil {
@@ -71,10 +82,10 @@ func (s *Synchronizer) Sync() error {
 		return err
 	}
 
-	mappedUpdates := make(map[string]map[string]*ItemsToUpdate)
+	mappedUpdates := make(map[string]map[string]*UpdatedItem)
 	for serviceName, items := range updates {
 		if _, found := mappedUpdates[serviceName]; !found {
-			mappedUpdates[serviceName] = make(map[string]*ItemsToUpdate)
+			mappedUpdates[serviceName] = make(map[string]*UpdatedItem)
 		}
 		for i := range items {
 			mappedUpdates[serviceName][items[i].ID] = &items[i]
@@ -90,7 +101,10 @@ func (s *Synchronizer) Sync() error {
 						continue
 					}
 
-					newId, err := client.CreateItem(&item)
+					newId, err := client.CreateItem(BasicItem{
+						Summary:   item.Summary,
+						StartDate: item.StartDate,
+					})
 					if err != nil {
 						return err
 					}
@@ -108,26 +122,93 @@ func (s *Synchronizer) Sync() error {
 				// delete the other updates to avoid redundant updates
 				// thus also guaranteeing that the current item has not been processed
 
-				// store unique summary values and the service where those values originated
-				summary := make(map[string][]string)
-				summary[originalDBItem.Summary] = make([]string, len(originalDBItem.ids))
-				date := make(map[time.Time][]string)
-				date[originalDBItem.StartDate] = make([]string, len(originalDBItem.ids))
-
+				// store services to update and their current (mismatched) states
+				toUpdate := make(map[string]*UpdatedItem)
 				for serviceName, serviceId := range originalDBItem.ids {
 					queuedUpdate, exists := mappedUpdates[serviceName][serviceId]
 					if exists {
-						summary[queuedUpdate.Summary] = append(summary[queuedUpdate.Summary], serviceName)
-						date[queuedUpdate.StartDate] = append(date[queuedUpdate.StartDate], serviceName)
+						toUpdate[serviceName] = queuedUpdate
 						delete(mappedUpdates[serviceName], serviceId)
 					}
 				}
 
+				finalItem := resolveConflict(originalDBItem, toUpdate)
+				// extend toUpdate to also include the state of other unqueued services
+				for serviceName, serviceId := range originalDBItem.ids {
+					if _, exists := toUpdate[serviceName]; !exists {
+						toUpdate[serviceName] = &UpdatedItem{
+							ExistingItem: ExistingItem{
+								BasicItem: BasicItem{
+									Summary:   originalDBItem.Summary,
+									StartDate: originalDBItem.StartDate,
+								},
+								ID: serviceId,
+							},
+							Updated: syncStartTime,
+						}
+					}
+				}
+
+				for serviceName, itemState := range toUpdate {
+					needsUpdate := false
+					needsUpdate = itemState.Summary != finalItem.Summary
+					needsUpdate = itemState.StartDate != finalItem.StartDate || needsUpdate
+					if needsUpdate {
+						client := s.mappedClients[serviceName]
+						err = client.UpdateItem(finalItem)
+						if err != nil {
+							return err
+						}
+					}
+				}
+
+				originalDBItem.Summary = finalItem.Summary
+				originalDBItem.StartDate = finalItem.StartDate
+				err = s.db.UpdateItem(serviceName, item.ID, originalDBItem)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
 
+	for _, client := range s.Clients {
+		err = s.db.UpdateLastSyncTimestamp(client.GetServiceName(), syncStartTime)
+	}
 	return nil
+}
+
+func resolveConflict(originalDBItem *DBItem, toUpdate map[string]*UpdatedItem) BasicItem {
+	// now perform the updates
+	finalItem := BasicItem{
+		Summary:   originalDBItem.Summary,
+		StartDate: originalDBItem.StartDate,
+	}
+	// calculate new date, first the new date will win, then last
+	// write will win.
+	latestUpdate := 0
+	for _, queuedUpdate := range toUpdate {
+		if queuedUpdate.StartDate != originalDBItem.StartDate {
+			if queuedUpdate.Updated.Unix() > int64(latestUpdate) {
+				finalItem.StartDate = queuedUpdate.StartDate
+				latestUpdate = int(queuedUpdate.Updated.Unix())
+			}
+		}
+	}
+
+	// concatenation of the new summaries
+	newSummaries := make([]string, len(toUpdate))
+	for _, queuedUpdate := range toUpdate {
+		if queuedUpdate.Summary != originalDBItem.Summary {
+			newSummaries = append(newSummaries, queuedUpdate.Summary)
+		}
+	}
+
+	if len(newSummaries) > 0 {
+		finalItem.Summary = strings.Join(newSummaries, " | ")
+	}
+
+	return finalItem
 }
 
 // getMappedDBItems retrieves the database rows that correspond to the provided updates
@@ -135,7 +216,7 @@ func (s *Synchronizer) Sync() error {
 // Thus, a single database item may be referenced by multiple services.
 // Therefore, the return value is a map of service name -> map of item ID -> *DBItem along with
 // the actual DBItem's
-func (s *Synchronizer) getMappedDBItems(updates map[string][]ItemsToUpdate) (map[string]map[string]*DBItem, []DBItem, error) {
+func (s *Synchronizer) getMappedDBItems(updates map[string][]UpdatedItem) (map[string]map[string]*DBItem, []DBItem, error) {
 	dbItems, err := s.db.GetItems(updates)
 	if err != nil {
 		return nil, nil, err
