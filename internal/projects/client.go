@@ -22,8 +22,12 @@ type Client struct {
 
 const ServiceName = "youtrack"
 
-func (c *Client) GetUpdatedItems(since time.Time) ([]sync.UpdatedItem, error) {
-	items := make([]sync.UpdatedItem, 10)
+func (c *Client) GetUpdatedItems(rawTime *string) ([]sync.TimestampedItem, error) {
+	since, err := time.Parse(time.RFC3339, *rawTime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse time: %w", err)
+	}
+	items := make([]sync.TimestampedItem, 10)
 	for _, projectID := range c.Projects {
 		items, err := c.getUpdatedItems("0-0", since)
 		if err != nil {
@@ -51,16 +55,16 @@ func NewClient(baseURL, apiToken string, projects []string, httpClient *http.Cli
 	}
 }
 
-func (c *Client) getUpdatedItems(projectID string, since time.Time) ([]sync.UpdatedItem, error) {
+func (c *Client) getUpdatedItems(projectID string, since time.Time) ([]sync.TimestampedItem, error) {
 	issues, err := c.getUpdatedIssues(projectID, since)
 	if err != nil {
 		return nil, err
 	}
 
-	var items []sync.UpdatedItem
+	var items []sync.TimestampedItem
 	for _, issue := range issues {
 		updatedTime := time.Unix(issue.Updated/1000, 0)
-		item := sync.UpdatedItem{
+		item := sync.TimestampedItem{
 			ExistingItem: sync.ExistingItem{
 				ID: issue.ID,
 				BasicItem: sync.BasicItem{
@@ -68,7 +72,7 @@ func (c *Client) getUpdatedItems(projectID string, since time.Time) ([]sync.Upda
 					Summary:   issue.Summary,
 				},
 			},
-			Updated: updatedTime,
+			Timestamp: updatedTime,
 		}
 		items = append(items, item)
 	}
@@ -158,6 +162,7 @@ func (c *Client) updateItem(item *sync.ExistingItem) (string, error) {
 	payload := map[string]any{
 		"summary": item.Summary,
 	}
+	// TODO this doesn't even handle dates!
 
 	buf, err := json.Marshal(payload)
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 )
 
 var ColumnSuffix = "_id"
+var DataSourceName = "sync.db"
 
 type DBClient struct {
 	*sql.DB
@@ -20,8 +21,56 @@ type DBClient struct {
 	columnNames []string
 }
 
-func NewDB(dataSourceName string, services []string) (*DBClient, error) {
-	db, err := sql.Open("sqlite3", dataSourceName)
+type DBConstClient struct {
+	*sql.DB
+}
+
+func (c *DBConstClient) SetConst(key, value string) error {
+	_, err := c.Exec("INSERT INTO consts (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value)
+	if err != nil {
+		return fmt.Errorf("failed to set const: %w", err)
+	}
+	return nil
+}
+
+func (c *DBConstClient) GetConst(key string) (string, error) {
+	var value string
+	err := c.QueryRow("SELECT value FROM consts WHERE key = ?", key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("No const found for key, returning empty string", slog.String("key", key))
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to get const: %w", err)
+	}
+	return value, nil
+}
+
+func NewDBConstClient() (*DBConstClient, error) {
+	db, err := sql.Open("sqlite3", DataSourceName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+	constsTable := `
+	CREATE TABLE IF NOT EXISTS consts (
+		key TEXT PRIMARY KEY,
+		value TEXT
+	);
+	`
+	_, err = db.Exec(constsTable)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create consts table: %w", err)
+	}
+
+	return &DBConstClient{db}, nil
+}
+
+func NewDB(services []string) (*DBClient, error) {
+	// replace with database connection pool??
+	db, err := sql.Open("sqlite3", DataSourceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -37,6 +86,7 @@ func NewDB(dataSourceName string, services []string) (*DBClient, error) {
 }
 
 type DBItem struct {
+	ID        int64
 	ids       map[string]string
 	Summary   string
 	StartDate time.Time
@@ -73,8 +123,7 @@ func createSchema(db *sql.DB, services []string) error {
 	updateTable := fmt.Sprintf(`
 	CREATE TABLE IF NOT EXISTS last_sync (
 		service TEXT PRIMARY KEY,
-		timestamp INTEGER,
-	    CHECK ( timestamp >= 0 ),
+		sync_info TEXT,
 		CHECK ( service IN (%s))
 	);
 	`, strings.Join(quotedServices, ", "))
@@ -90,24 +139,24 @@ func createSchema(db *sql.DB, services []string) error {
 	return err
 }
 
-func (c *DBClient) GetLastSyncTimestamp(service string) (time.Time, error) {
-	var rawTime int64
-	err := c.QueryRow("SELECT timestamp FROM last_sync WHERE service = ?", service).Scan(&rawTime)
+func (c *DBClient) GetSyncInfo(service string) (string, error) {
+	var info string
+	err := c.QueryRow("SELECT sync_info FROM last_sync WHERE service = ?", service).Scan(&info)
 
 	if errors.Is(err, sql.ErrNoRows) {
-		slog.Warn("No last sync timestamp found, returning zero time", slog.String("service", service))
-		return time.Time{}, nil
+		slog.Warn("No last sync info found, returning empty string", slog.String("service", service))
+		return "", nil
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("failed to get last sync rawTime: %w", err)
+		return "", fmt.Errorf("failed to get last sync info: %w", err)
 	}
-	return time.Unix(rawTime, 0), nil
+	return info, nil
 }
 
-func (c *DBClient) UpdateLastSyncTimestamp(service string, timestamp time.Time) error {
-	_, err := c.Exec("INSERT INTO last_sync (service, timestamp) VALUES (?, ?) ON CONFLICT(service) DO UPDATE SET timestamp = excluded.timestamp", service, timestamp.Unix())
+func (c *DBClient) UpdateLastSyncInfo(service string, info string) error {
+	_, err := c.Exec("INSERT INTO last_sync (service, sync_info) VALUES (?, ?) ON CONFLICT(service) DO UPDATE SET sync_info = excluded.sync_info", service, info)
 	if err != nil {
-		return fmt.Errorf("failed to update last sync timestamp: %w", err)
+		return fmt.Errorf("failed to update last sync info: %w", err)
 	}
 	return nil
 }
@@ -130,64 +179,50 @@ func (c *DBClient) createUpdateIdQuery(item *DBItem, queryFormat string) ([]stri
 	return updateIdQuery, updateIdValues, nil
 }
 
-func (c *DBClient) UpdateItem(service string, serviceId string, item *DBItem) error {
-	if !c.isValidColumn(service) {
-		return fmt.Errorf("invalid service column: %s", service)
+func (c *DBClient) UpdateOrCreateItem(item *DBItem) error {
+	if item == nil {
+		return fmt.Errorf("item cannot be nil")
+	}
+	if item.ID < 0 {
+		return fmt.Errorf("invalid item id: %d", item.ID)
 	}
 
-	updateIdQuery, updateIdValues, err := c.createUpdateIdQuery(item, "%s=(?)")
-	if err != nil {
-		return err
+	updating := item.ID != 0
+
+	var query string
+	if updating {
+		query = "UPDATE"
+	} else {
+		query = "INSERT INTO"
 	}
-
-	setClauses := []string{"summary = (?)", "startDate = (?)"}
-	if len(updateIdQuery) > 0 {
-		setClauses = append(setClauses, updateIdQuery...)
-	}
-
-	args := append([]interface{}{item.Summary, item.StartDate.Unix()}, updateIdValues...)
-	args = append(args, serviceId)
-
-	_, err = c.Exec(fmt.Sprintf(
-		"UPDATE sync_items SET %s WHERE %s=(?)",
-		strings.Join(setClauses, ", "),
-		service+ColumnSuffix), args...)
-	if err != nil {
-		return fmt.Errorf("failed to update calendar event: %w", err)
-	}
-	return nil
-}
-
-func (c *DBClient) InsertItem(item *DBItem) error {
-	updateIdQuery, updateIdValues, err := c.createUpdateIdQuery(item, "%s")
-	if err != nil {
-		return err
-	}
-
-	columns := []string{"summary", "startDate"}
-	placeholders := []string{"?", "?"}
+	query += " sync_items SET summary = ?, startDate = ?"
 	args := []interface{}{item.Summary, item.StartDate.Unix()}
 
-	if len(updateIdQuery) > 0 {
-		columns = append(columns, updateIdQuery...)
-		for range updateIdQuery {
-			placeholders = append(placeholders, "?")
-		}
-		args = append(args, updateIdValues...)
+	updateIdQuery, updateIdValues, err := c.createUpdateIdQuery(item, "%s = ?")
+	if err != nil {
+		return fmt.Errorf("failed to create update id query: %w", err)
+	}
+	query += ", " + strings.Join(updateIdQuery, ", ")
+	args = append(args, updateIdValues...)
+
+	if updating {
+		query += " WHERE id = ?"
+		args = append(args, item.ID)
 	}
 
-	_, err = c.Exec(
-		fmt.Sprintf("INSERT INTO sync_items (%s) VALUES (%s)", strings.Join(columns, ", "), strings.Join(placeholders, ", ")),
-		args...)
+	slog.Info("Updating item in database", "ID", item.ID, "Summary", item.Summary, "StartDate", item.StartDate, "IDs", item.ids)
+
+	_, err = c.Exec(query, args...)
 	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
+		return fmt.Errorf("failed to update event: %w", err)
 	}
 	return nil
 }
 
 // GetItems retrieves items that exist in potentially multiple services based on the provided serviceItems map.
-func (c *DBClient) GetItems(serviceItems map[string][]UpdatedItem) ([]DBItem, error) {
-	columnsToSelect := append(append([]string{}, c.columnNames...), "summary", "startDate")
+func (c *DBClient) GetItems(serviceItems map[string][]TimestampedItem) ([]DBItem, error) {
+	columnsToSelect := append([]string{"id"}, c.columnNames...)
+	columnsToSelect = append(columnsToSelect, "summary", "startDate")
 	query := fmt.Sprintf("SELECT %s FROM sync_items WHERE", strings.Join(columnsToSelect, ", "))
 
 	var (
@@ -232,12 +267,14 @@ func (c *DBClient) GetItems(serviceItems map[string][]UpdatedItem) ([]DBItem, er
 	for rows.Next() {
 		var item DBItem
 		item.ids = make(map[string]string)
+		var dbID int64
 
 		idValues := make([]sql.NullString, len(c.columnNames))
 		var summary sql.NullString
 		var date sql.NullInt64
 
-		scanTargets := make([]interface{}, 0, len(c.columnNames)+2)
+		scanTargets := make([]interface{}, 0, len(c.columnNames)+3)
+		scanTargets = append(scanTargets, &dbID)
 		for i := range idValues {
 			scanTargets = append(scanTargets, &idValues[i])
 		}
@@ -253,6 +290,7 @@ func (c *DBClient) GetItems(serviceItems map[string][]UpdatedItem) ([]DBItem, er
 				item.ids[serviceName] = idValues[idx].String
 			}
 		}
+		item.ID = dbID
 		item.Summary = summary.String
 		if date.Valid {
 			item.StartDate = time.Unix(date.Int64, 0)
