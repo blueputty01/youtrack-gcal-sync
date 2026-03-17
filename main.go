@@ -1,11 +1,12 @@
 package main
 
 import (
+	"log/slog"
+	"os"
+
 	"github.com/blueputty01/task-sync/internal/calendar"
 	"github.com/blueputty01/task-sync/internal/projects"
 	"github.com/blueputty01/task-sync/internal/sync"
-	"log/slog"
-	"os"
 )
 
 func main() {
@@ -13,7 +14,7 @@ func main() {
 		constructYoutrackClient(),
 		constructGoogleCalendarClient(),
 	}
-	synchronizer, err := sync.NewSynchronizer("sync.db", clients)
+	synchronizer, err := sync.NewSynchronizer(clients)
 	if err != nil {
 		slog.Error("Failed to create synchronizer:", "DBClient error", err)
 	}
@@ -39,5 +40,9 @@ func constructYoutrackClient() *projects.Client {
 }
 
 func constructGoogleCalendarClient() *calendar.Client {
-	return calendar.NewClient(nil)
+	client, err := calendar.NewClient("primary", "secondary")
+	if err != nil {
+		slog.Error("Failed to create Google Calendar client:", "error", err)
+	}
+	return client
 }
